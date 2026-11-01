@@ -13,6 +13,7 @@ VERSION_RE = re.compile(r"\d+(?:\.\d+)+(?:[-._][0-9A-Za-z]+)*")
 
 def _versions_in(text):
     """Return every version shaped match in text, and nothing else."""
+    # Shape is the only test. A date written as 2024.01.15, an IP address, and a price with decimals all match this pattern, so the output mixes real software versions with anything that happens to be digits around dots, and the reader has to sort them by eye.
     return VERSION_RE.findall(text or "")
 
 # Configure logging
@@ -42,6 +43,7 @@ def get_http_headers(url):
     """
     try:
         logging.debug(f"Fetching headers from {url}")
+        # Headers and HTML are fetched in two separate requests, seconds apart, and error responses count as failures for both. A page that answers 404, where a framework version page often lives, is never examined at all, and a page that changes between the two reads is reported as if it were one snapshot.
         response = requests.get(url, timeout=10) #Added timeout
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         logging.debug(f"Received {len(response.headers)} headers from {url}")
@@ -103,6 +105,7 @@ def extract_versions_from_comments(html_content):
     """
     versions = []
     soup = BeautifulSoup(html_content, 'html.parser')
+    # Comments inside script text or held in attributes are not Comment nodes and are missed. What this catches is the classic left behind build note between comment markers, which is the case worth catching, but it is not every comment shaped place a version can hide.
     comments = soup.find_all(string=lambda text: isinstance(text, Comment))
     logging.debug(f"Found {len(comments)} HTML comments to check")
 
@@ -140,6 +143,7 @@ def extract_versions_from_html(html_content):
                 for match in _versions_in(assign.group(1)):
                     logging.debug(f"Script tag carries version shaped match {match}")
                     versions.append(f"Script Tag: {match}")
+            # The define pattern is greedy across the script body, so on a page with several AMD modules it can span from the first define to a later return and hand back whatever string sits there. It runs only after the plain assignment search, so both shapes can report the same version twice.
             version_match_define = re.search(r"define\(\[.*\],\s*function\(.*\)\s*\{\s*return\s*['\"]([^'\"]+)['\"]", script_tag.string) #Regex for AMD define
             if version_match_define:
                 for match in _versions_in(version_match_define.group(1)):
@@ -172,6 +176,7 @@ def main():
     url = args.url
     output_file = args.output
     use_color = not args.no_color
+    # Colour is on unless the caller turns it off, and nothing checks whether the output is a terminal. Piping a run into a file or another tool carries the escape codes with it, which is why the plain output file below is written by a separate code path that never had colour in it.
 
     logging.info(f"Starting scan on {url}")
 
@@ -187,6 +192,7 @@ def main():
     # Get HTTP Headers
     headers = get_http_headers(url)
     if headers:
+        # The output file path runs every extractor a second time on the same data, rather than reusing the lists already printed. The results should match, but the work is doubled, and any future change to one pass would let the console and the file disagree.
         header_versions = extract_versions_from_headers(headers)
         if header_versions:
             logging.info("Found potential version numbers in HTTP headers:")
@@ -226,6 +232,7 @@ def main():
         else:
             logging.info("No potential version numbers found in HTML.")
     
+    # One success is enough to call the scan complete. If the headers fetch worked and the HTML fetch failed, the run still exits 0 and reports only half the surface it set out to check, with the missing half visible only in the debug line below.
     if headers is None and html_content is None:
         logging.error(f"Scan failed: neither headers nor HTML could be fetched from {url}. No completed scan is reported.")
         sys.exit(1)
