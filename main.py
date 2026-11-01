@@ -2,8 +2,18 @@ import argparse
 import requests
 import logging
 from bs4 import BeautifulSoup
+from bs4.element import Comment
 import re
 import sys
+
+# A version number is digits with at least one dot separator, with an
+# optional suffix. A single word or a bare number is not a version.
+VERSION_RE = re.compile(r"\d+(?:\.\d+)+(?:[-._][0-9A-Za-z]+)*")
+
+
+def _versions_in(text):
+    """Return every version shaped match in text, and nothing else."""
+    return VERSION_RE.findall(text or "")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,8 +41,10 @@ def get_http_headers(url):
         dict: A dictionary containing the HTTP headers.  Returns None on failure.
     """
     try:
+        logging.debug(f"Fetching headers from {url}")
         response = requests.get(url, timeout=10) #Added timeout
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        logging.debug(f"Received {len(response.headers)} headers from {url}")
         return response.headers
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching headers from {url}: {e}")
@@ -50,10 +62,12 @@ def extract_versions_from_headers(headers):
     """
     versions = []
     for header, value in headers.items():
-        # Improved version number regex (allows for alpha characters, hyphens, etc.)
-        version_match = re.search(r"([a-zA-Z0-9\._-]+)", value) #Updated regex
-        if version_match:
-            versions.append(f"{header}: {version_match.group(1)}")
+        # Only a version shaped match counts, and only the matched
+        # version string is reported. The rest of a header value is
+        # never printed.
+        for match in _versions_in(value):
+            logging.debug(f"Header {header} carries version shaped match {match}")
+            versions.append(f"{header}: {match}")
 
     return versions
 
@@ -68,8 +82,10 @@ def get_html_content(url):
         str: The HTML content of the page. Returns None on failure.
     """
     try:
+        logging.debug(f"Fetching HTML content from {url}")
         response = requests.get(url, timeout=10) #Added timeout
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        logging.debug(f"Received {len(response.text)} characters of HTML from {url}")
         return response.text
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching HTML content from {url}: {e}")
@@ -87,13 +103,13 @@ def extract_versions_from_comments(html_content):
     """
     versions = []
     soup = BeautifulSoup(html_content, 'html.parser')
-    comments = soup.find_all(string=lambda text: isinstance(text, bs4.element.Comment)) # type: ignore  bs4 isn't correctly typed
+    comments = soup.find_all(string=lambda text: isinstance(text, Comment))
+    logging.debug(f"Found {len(comments)} HTML comments to check")
 
     for comment in comments:
-        # Improved version number regex (allows for alpha characters, hyphens, etc.)
-        version_match = re.search(r"([a-zA-Z0-9\._-]+)", str(comment)) #Updated regex
-        if version_match:
-            versions.append(f"Comment: {version_match.group(1)}")
+        for match in _versions_in(str(comment)):
+            logging.debug(f"Comment carries version shaped match {match}")
+            versions.append(f"Comment: {match}")
     return versions
 
 def extract_versions_from_html(html_content):
@@ -113,19 +129,21 @@ def extract_versions_from_html(html_content):
     for meta_tag in soup.find_all('meta'):
         if meta_tag.has_attr('name') and 'version' in meta_tag['name'].lower():
             if meta_tag.has_attr('content'):
-                version_match = re.search(r"([a-zA-Z0-9\._-]+)", meta_tag['content'])
-                if version_match:
-                    versions.append(f"Meta Tag ({meta_tag['name']}): {version_match.group(1)}")
+                for match in _versions_in(meta_tag['content']):
+                    logging.debug(f"Meta tag {meta_tag['name']} carries version shaped match {match}")
+                    versions.append(f"Meta Tag ({meta_tag['name']}): {match}")
 
     # Look for version information in script tags (e.g., in Javascript variables)
     for script_tag in soup.find_all('script'):
         if script_tag.string:
-            version_match = re.search(r"version\s*[:=]\s*['\"]?([a-zA-Z0-9\._-]+)['\"]?", script_tag.string) #Regex for Javascript variable assignments
-            if version_match:
-                versions.append(f"Script Tag: {version_match.group(1)}")
-            version_match_define = re.search(r"define\(\[.*\],\s*function\(.*\)\s*\{\s*return\s*['\"]([a-zA-Z0-9\._-]+)['\"]", script_tag.string) #Regex for AMD define
+            for assign in re.finditer(r"version\s*[:=]\s*['\"]([^'\"]+)['\"]", script_tag.string):
+                for match in _versions_in(assign.group(1)):
+                    logging.debug(f"Script tag carries version shaped match {match}")
+                    versions.append(f"Script Tag: {match}")
+            version_match_define = re.search(r"define\(\[.*\],\s*function\(.*\)\s*\{\s*return\s*['\"]([^'\"]+)['\"]", script_tag.string) #Regex for AMD define
             if version_match_define:
-                versions.append(f"Script Tag (define): {version_match_define.group(1)}")
+                for match in _versions_in(version_match_define.group(1)):
+                    versions.append(f"Script Tag (define): {match}")
     return versions
 
 def color_text(text, color_code):
@@ -208,6 +226,12 @@ def main():
         else:
             logging.info("No potential version numbers found in HTML.")
     
+    if headers is None and html_content is None:
+        logging.error(f"Scan failed: neither headers nor HTML could be fetched from {url}. No completed scan is reported.")
+        sys.exit(1)
+
+    logging.debug(f"Scan data collected for {url}: headers {'ok' if headers else 'missing'}, HTML {'ok' if html_content else 'missing'}")
+
     # Write to output file if specified
     if output_file:
         try:
