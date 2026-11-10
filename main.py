@@ -180,13 +180,12 @@ def main():
 
     logging.info(f"Starting scan on {url}")
 
-    # Input validation (check for valid URL)
-    try:
-        result = requests.utils.urlparse(url)
-        if not all([result.scheme, result.netloc]):
-            raise ValueError("Invalid URL")
-    except:
-        logging.error("Invalid URL provided.")
+    # Input validation: only http and https URLs with a host can be
+    # fetched by this tool. Any other scheme is rejected here instead
+    # of passing validation and failing later at the fetch layer.
+    result = requests.utils.urlparse(url)
+    if result.scheme not in ("http", "https") or not result.netloc:
+        logging.error("Invalid URL provided. URL must start with http:// or https:// and include a host.")
         sys.exit(1)
 
     # Get HTTP Headers
@@ -273,6 +272,7 @@ def main():
 
         except IOError as e:
             logging.error(f"Error writing to output file: {e}")
+            sys.exit(1)
     
     logging.info("Scan completed.")
 
